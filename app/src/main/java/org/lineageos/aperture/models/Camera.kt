@@ -117,6 +117,48 @@ class Camera private constructor(
             )
         }
 
+    /**
+     * Manual controls available to [CameraMode.PRO] on this camera.
+     */
+    val proCapabilities: ProCapabilities by lazy {
+        val capabilities = camera2CameraInfo.getCameraCharacteristic(
+            CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
+        ) ?: IntArray(0)
+        val manualSensor = capabilities.contains(
+            CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR
+        )
+        val manualPostProcessing = capabilities.contains(
+            CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING
+        )
+
+        val isoRange = camera2CameraInfo.getCameraCharacteristic(
+            CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE
+        ).takeIf { manualSensor }
+        val exposureTimeRange = camera2CameraInfo.getCameraCharacteristic(
+            CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE
+        ).takeIf { manualSensor }
+        val minimumFocusDistance = camera2CameraInfo.getCameraCharacteristic(
+            CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE
+        )?.takeIf { manualSensor && it > 0f }
+        val awbModes = camera2CameraInfo.getCameraCharacteristic(
+            CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES
+        ) ?: IntArray(0)
+
+        ProCapabilities(
+            isoValues = isoRange?.let { range ->
+                PRO_ISO_STOPS.filter { it in range.lower..range.upper }
+            }.orEmpty(),
+            exposureTimeValues = exposureTimeRange?.let { range ->
+                PRO_EXPOSURE_TIME_STOPS_NS.filter {
+                    it in range.lower..minOf(range.upper, PRO_MAX_EXPOSURE_TIME_NS)
+                }
+            }.orEmpty(),
+            awbPresets = PRO_AWB_PRESETS.filter { awbModes.contains(it) },
+            supportsColorTemperature = manualPostProcessing,
+            minimumFocusDistance = minimumFocusDistance,
+        )
+    }
+
     val supportedVideoStabilizationModes = buildList {
         add(VideoStabilizationMode.OFF)
 
@@ -277,6 +319,32 @@ class Camera private constructor(
     }.toSet()
 
     companion object {
+        private val PRO_ISO_STOPS = listOf(
+            50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
+            2000, 2500, 3200, 4000, 5000, 6400, 12800,
+        )
+
+        private const val NANOS_PER_SECOND = 1_000_000_000L
+
+        /**
+         * Standard shutter speeds from 1/8000 s to 1 s, in nanoseconds.
+         */
+        private val PRO_EXPOSURE_TIME_STOPS_NS = listOf(
+            8000, 4000, 2000, 1000, 500, 250, 125, 60, 30, 15, 8, 4, 2,
+        ).map { NANOS_PER_SECOND / it } + NANOS_PER_SECOND
+
+        private const val PRO_MAX_EXPOSURE_TIME_NS = NANOS_PER_SECOND
+
+        private val PRO_AWB_PRESETS = listOf(
+            CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT,
+            CameraMetadata.CONTROL_AWB_MODE_WARM_FLUORESCENT,
+            CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT,
+            CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT,
+            CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT,
+            CameraMetadata.CONTROL_AWB_MODE_TWILIGHT,
+            CameraMetadata.CONTROL_AWB_MODE_SHADE,
+        )
+
         fun fromCameraX(
             cameraXCameraInfo: CameraInfo,
             extensionsManager: ExtensionsManager,

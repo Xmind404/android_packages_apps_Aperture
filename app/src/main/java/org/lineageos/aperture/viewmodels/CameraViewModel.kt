@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -57,6 +58,7 @@ import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.runningFold
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import org.lineageos.aperture.ext.applicationContext
@@ -85,6 +87,8 @@ import org.lineageos.aperture.models.HotPixelMode
 import org.lineageos.aperture.models.IslandItem
 import org.lineageos.aperture.models.NoiseReductionMode
 import org.lineageos.aperture.models.PhotoOutputFormat
+import org.lineageos.aperture.models.ProCapabilities
+import org.lineageos.aperture.models.ProSettings
 import org.lineageos.aperture.models.Rotation
 import org.lineageos.aperture.models.ShadingMode
 import org.lineageos.aperture.models.ThermalStatus
@@ -213,6 +217,43 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
             started = SharingStarted.Eagerly,
             initialValue = preferencesRepository.lastCameraFacing.value,
         )
+
+    private val _proSettings = MutableStateFlow(ProSettings())
+
+    /**
+     * Manual settings of [CameraMode.PRO]. Reset to automatic whenever the camera changes, since
+     * another camera may support different ranges.
+     */
+    val proSettings = _proSettings.asStateFlow()
+
+    private var proSettingsCameraId: String? = null
+
+    /**
+     * Manual controls supported by the current camera, null before a camera is configured.
+     */
+    val proCapabilities: ProCapabilities?
+        get() = _cameraConfiguration.value?.camera?.proCapabilities
+
+    fun setProIso(iso: Int?) = _proSettings.update { it.copy(iso = iso) }
+
+    fun setProExposureTime(exposureTimeNs: Long?) =
+        _proSettings.update { it.copy(exposureTimeNs = exposureTimeNs) }
+
+    fun setProWhiteBalance(whiteBalance: ProSettings.WhiteBalance) =
+        _proSettings.update { it.copy(whiteBalance = whiteBalance) }
+
+    fun setProFocusDistance(focusDistance: Float?) =
+        _proSettings.update { it.copy(focusDistance = focusDistance) }
+
+    /**
+     * Called when a camera configuration is bound; drops manual values meant for another camera.
+     */
+    fun onProCameraBound(cameraId: String) {
+        if (proSettingsCameraId != cameraId) {
+            proSettingsCameraId = cameraId
+            _proSettings.value = ProSettings()
+        }
+    }
 
     /**
      * The current camera mode.
@@ -360,7 +401,7 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
         qrFlashMode,
     ) { cameraConfiguration, photoFlashMode, videoFlashMode, qrFlashMode ->
         when (cameraConfiguration.cameraMode) {
-            CameraMode.PHOTO -> photoFlashMode
+            CameraMode.PRO, CameraMode.PHOTO -> photoFlashMode
             CameraMode.VIDEO -> videoFlashMode
             CameraMode.QR -> qrFlashMode
         }
@@ -384,7 +425,7 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
         val flashMode = wantedFlashMode.takeIf { it in supportedFlashModes } ?: FlashMode.OFF
 
         val shouldForceTorch = forceTorch
-                && cameraConfiguration.cameraMode == CameraMode.PHOTO
+                && cameraConfiguration.cameraMode.isPhoto
                 && FlashMode.TORCH in cameraConfiguration.camera.supportedFlashModes
 
         when (shouldForceTorch) {
@@ -1321,7 +1362,7 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
         val cameraConfiguration = _cameraConfiguration.value ?: return false
 
         // Long-press is supported only on photo mode and if torch mode is available
-        val forceTorchAvailable = cameraConfiguration.cameraMode == CameraMode.PHOTO
+        val forceTorchAvailable = cameraConfiguration.cameraMode.isPhoto
                 && cameraConfiguration.camera.supportedFlashModes.contains(FlashMode.TORCH)
         if (forceTorch && !forceTorchAvailable) {
             this.forceTorch.value = false
@@ -1342,7 +1383,8 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
 
                 false -> supportedFlashModes.value.toList().next(flashMode.value)?.let {
                     when (cameraConfiguration.cameraMode) {
-                        CameraMode.PHOTO -> preferencesRepository.photoFlashMode.value = it
+                        CameraMode.PRO, CameraMode.PHOTO ->
+                            preferencesRepository.photoFlashMode.value = it
                         CameraMode.VIDEO -> preferencesRepository.videoFlashMode.value = it
                         CameraMode.QR -> qrFlashMode.value = it
                     }
@@ -1678,13 +1720,15 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
         camera: Camera,
         cameraMode: CameraMode,
     ) = when (cameraMode) {
-        CameraMode.PHOTO -> {
-            // Enable ZSL when requested by the user and supported by the camera
+        CameraMode.PRO, CameraMode.PHOTO -> {
+            // Enable ZSL when requested by the user and supported by the camera. Not in PRO:
+            // ZSL returns a buffered frame that may predate the manual settings.
             val photoCaptureMode = when (
                 val photoCaptureMode = preferencesRepository.photoCaptureMode.value
             ) {
                 ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY -> when (
                     preferencesRepository.enableZsl.value && camera.supportsZsl
+                            && cameraMode == CameraMode.PHOTO
                 ) {
                     true -> ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG
                     false -> ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
@@ -1718,12 +1762,17 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
 
             CameraConfiguration.Photo(
                 camera = camera,
-                extensionMode = preferencesRepository.photoEffect.value,
+                // CameraX extensions ignore Camera2 manual options, so PRO never uses them
+                extensionMode = when (cameraMode) {
+                    CameraMode.PRO -> ExtensionMode.NONE
+                    else -> preferencesRepository.photoEffect.value
+                },
                 camera2Options = buildPhotoCamera2Options(camera, photoCaptureMode),
                 photoCaptureMode = photoCaptureMode,
                 photoAspectRatio = preferencesRepository.photoAspectRatio.value,
                 enableHighResolution = overlaysRepository.enableHighResolution,
                 photoOutputFormat = photoOutputFormat,
+                cameraMode = cameraMode,
             )
         }
 

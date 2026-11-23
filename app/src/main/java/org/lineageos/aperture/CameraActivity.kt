@@ -15,6 +15,7 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.AnimatedVectorDrawable
 import android.graphics.drawable.ColorDrawable
+import android.hardware.camera2.CameraMetadata
 import android.icu.text.DecimalFormat
 import android.net.Uri
 import android.os.Build
@@ -33,6 +34,8 @@ import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -73,6 +76,9 @@ import coil3.request.error
 import coil3.request.fallback
 import coil3.size.Scale
 import coil3.video.VideoFrameDecoder
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.slider.Slider
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -91,6 +97,7 @@ import org.lineageos.aperture.ext.setDistortionCorrectionMode
 import org.lineageos.aperture.ext.setEdgeMode
 import org.lineageos.aperture.ext.setFrameRate
 import org.lineageos.aperture.ext.setHotPixelMode
+import org.lineageos.aperture.ext.setProSettings
 import org.lineageos.aperture.ext.setNoiseReductionMode
 import org.lineageos.aperture.ext.setPadding
 import org.lineageos.aperture.ext.setShadingMode
@@ -104,6 +111,7 @@ import org.lineageos.aperture.models.AssistantIntent
 import org.lineageos.aperture.models.CameraConfiguration
 import org.lineageos.aperture.models.CameraFacing
 import org.lineageos.aperture.models.CameraMode
+import org.lineageos.aperture.models.ProSettings
 import org.lineageos.aperture.models.CameraState
 import org.lineageos.aperture.models.Event
 import org.lineageos.aperture.models.FlashMode
@@ -171,6 +179,36 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
     private val micButton by lazy { findViewById<Button>(R.id.micButton) }
     private val previewBlurView by lazy { findViewById<PreviewBlurView>(R.id.previewBlurView) }
     private val proButton by lazy { findViewById<ImageButton>(R.id.proButton) }
+    private val proControlsLayout by lazy { findViewById<LinearLayout>(R.id.proControlsLayout) }
+    private val proSliderRow by lazy { findViewById<LinearLayout>(R.id.proSliderRow) }
+    private val proValueTextView by lazy { findViewById<TextView>(R.id.proValueTextView) }
+    private val proSlider by lazy { findViewById<Slider>(R.id.proSlider) }
+    private val proAutoButton by lazy { findViewById<MaterialButton>(R.id.proAutoButton) }
+    private val proControlsToggleGroup by lazy { findViewById<MaterialButtonToggleGroup>(R.id.proControlsToggleGroup) }
+
+    /**
+     * The configuration bound last, used to rebuild the Camera2 options when PRO settings change.
+     */
+    private var boundCameraConfiguration: CameraConfiguration? = null
+
+    /**
+     * Latest exposure compensation range and level (0..1), shown by the PRO EV control.
+     */
+    private var exposureCompensationRangeToLevel: Pair<ClosedRange<Int>, Float>? = null
+
+    /**
+     * The PRO control whose slider is shown, or null.
+     */
+    private var selectedProControl: ProControl? = null
+
+    private enum class ProControl(val buttonId: Int) {
+        ISO(R.id.proIsoButton),
+        SHUTTER(R.id.proShutterButton),
+        EV(R.id.proEvButton),
+        WB(R.id.proWbButton),
+        TEMPERATURE(R.id.proTemperatureButton),
+        FOCUS(R.id.proFocusButton),
+    }
     private val screenFlashView by lazy { findViewById<ScreenFlashView>(R.id.screenFlashView) }
     private val secondaryBottomBarLayout by lazy { findViewById<ConstraintLayout>(R.id.secondaryBottomBarLayout) }
     private val secondaryTopBarLayout by lazy { findViewById<HorizontalScrollView>(R.id.secondaryTopBarLayout) }
@@ -444,6 +482,21 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
         proButton.setOnClickListener {
             secondaryTopBarLayout.slide()
         }
+        proControlsToggleGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            val control = ProControl.entries.firstOrNull { it.buttonId == checkedId }
+            if (isChecked) {
+                selectedProControl = control
+            } else if (selectedProControl == control) {
+                selectedProControl = null
+            }
+            refreshProSlider()
+        }
+        proSlider.addOnChangeListener { _, value, fromUser ->
+            if (fromUser) {
+                onProSliderChanged(value.toInt())
+            }
+        }
+        proAutoButton.setOnClickListener { setSelectedProControlAuto() }
         googleLensButton.setOnClickListener {
             dismissKeyguardAndRun {
                 GoogleLensUtils.launchGoogleLens(this)
@@ -518,7 +571,8 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
         shutterButton.setOnClickListener {
             // Shutter animation
             when (viewModel.cameraMode.value) {
-                CameraMode.PHOTO -> startShutterAnimation(ShutterAnimation.PhotoCapture)
+                CameraMode.PRO, CameraMode.PHOTO ->
+                    startShutterAnimation(ShutterAnimation.PhotoCapture)
                 CameraMode.VIDEO -> {
                     if (countDownView.cancelCountDown()) {
                         viewModel.cameraState.value = CameraState.IDLE
@@ -535,7 +589,7 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
 
             startTimerAndRun {
                 when (viewModel.cameraMode.value) {
-                    CameraMode.PHOTO -> viewModel.takePhoto()
+                    CameraMode.PRO, CameraMode.PHOTO -> viewModel.takePhoto()
                     CameraMode.VIDEO -> viewModel.captureVideo()
                     else -> {}
                 }
@@ -749,6 +803,7 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
                 // Update secondary bottom bar buttons
                 proButton.isVisible = cameraMode != CameraMode.QR
                 googleLensButton.isVisible = cameraMode == CameraMode.QR && isGoogleLensAvailable
+                proControlsLayout.isVisible = cameraMode == CameraMode.PRO
 
                 // Update primary bar buttons
                 shutterButton.isInvisible = cameraMode == CameraMode.QR
@@ -761,18 +816,21 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
         launch {
             viewModel.cameraModeTransition.collectLatest { (oldCameraMode, newCameraMode) ->
                 when (oldCameraMode) {
-                    CameraMode.PHOTO -> when (newCameraMode) {
+                    CameraMode.PRO, CameraMode.PHOTO -> when (newCameraMode) {
                         CameraMode.VIDEO -> startShutterAnimation(ShutterAnimation.PhotoToVideo)
                         else -> startShutterAnimation(ShutterAnimation.InitPhoto)
                     }
 
                     CameraMode.VIDEO -> when (newCameraMode) {
-                        CameraMode.PHOTO -> startShutterAnimation(ShutterAnimation.VideoToPhoto)
+                        CameraMode.PRO, CameraMode.PHOTO ->
+                            startShutterAnimation(ShutterAnimation.VideoToPhoto)
+
                         else -> startShutterAnimation(ShutterAnimation.InitVideo)
                     }
 
                     CameraMode.QR, null -> when (newCameraMode) {
-                        CameraMode.PHOTO -> startShutterAnimation(ShutterAnimation.InitPhoto)
+                        CameraMode.PRO, CameraMode.PHOTO ->
+                            startShutterAnimation(ShutterAnimation.InitPhoto)
 
                         CameraMode.VIDEO -> startShutterAnimation(ShutterAnimation.InitVideo)
 
@@ -1171,6 +1229,10 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
 
         launch {
             viewModel.exposureCompensationRangeToLevel.collectLatest { (range, level) ->
+                exposureCompensationRangeToLevel = range to level
+                if (selectedProControl == ProControl.EV) {
+                    refreshProSlider()
+                }
                 exposureLevel.steps = range.endInclusive - range.start
                 exposureLevel.progress = level
                 exposureLevel.textFormatter = {
@@ -1180,6 +1242,13 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
                         false -> EXPOSURE_LEVEL_FORMATTER.format(ev).toString()
                     }
                 }
+            }
+        }
+
+        launch {
+            viewModel.proSettings.collectLatest {
+                refreshProSlider()
+                applyCaptureRequestOptions()
             }
         }
 
@@ -1656,41 +1725,10 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
         lifecycleScope.launch {
             viewModel.cameraController.initializationFuture.await()
 
-            val camera2CameraControl = viewModel.cameraController.camera2CameraControl ?: run {
-                Log.wtf(LOG_TAG, "Camera2CameraControl not available even with camera ready?")
-                return@launch
-            }
-
-            val camera2Options = cameraConfiguration.camera2Options
-
-            // Set Camera2 CaptureRequest options
-            camera2CameraControl.setCaptureRequestOptions(CaptureRequestOptions.Builder()
-                .setFrameRate(
-                    when (cameraConfiguration) {
-                        is CameraConfiguration.Video -> cameraConfiguration.videoFrameRate
-                        else -> null
-                    }
-                )
-                .setVideoStabilizationMode(
-                    when (cameraConfiguration) {
-                        is CameraConfiguration.Video -> when (
-                            cameraConfiguration.enableVideoStabilization
-                        ) {
-                            true -> VideoStabilizationMode.getMode(cameraConfiguration.camera)
-                            false -> null
-                        }
-
-                        else -> null
-                    } ?: VideoStabilizationMode.OFF
-                )
-                .setEdgeMode(camera2Options.edgeMode)
-                .setNoiseReductionMode(camera2Options.noiseReductionMode)
-                .setShadingMode(camera2Options.shadingMode)
-                .setColorCorrectionAberrationMode(camera2Options.colorCorrectionAberrationMode)
-                .setDistortionCorrectionMode(camera2Options.distortionCorrectionMode)
-                .setHotPixelMode(camera2Options.hotPixelMode)
-                .build()
-            )
+            boundCameraConfiguration = cameraConfiguration
+            viewModel.onProCameraBound(cameraConfiguration.camera.cameraId)
+            updateProControls()
+            applyCaptureRequestOptions()
         }
 
         // Restore settings that can be set on the fly
@@ -1698,6 +1736,237 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
 
         // Reset exposure level
         viewModel.setExposureCompensationLevel(0.5f)
+    }
+
+    /**
+     * Applies the Camera2 capture request options of the bound configuration, plus the manual
+     * settings when in [CameraMode.PRO]. setCaptureRequestOptions() replaces all previous
+     * options, so going back to automatic removes the manual keys.
+     */
+    private fun applyCaptureRequestOptions() {
+        val cameraConfiguration = boundCameraConfiguration ?: return
+        val camera2CameraControl = viewModel.cameraController.camera2CameraControl ?: return
+        val camera2Options = cameraConfiguration.camera2Options
+
+        camera2CameraControl.setCaptureRequestOptions(CaptureRequestOptions.Builder()
+            .setFrameRate(
+                when (cameraConfiguration) {
+                    is CameraConfiguration.Video -> cameraConfiguration.videoFrameRate
+                    else -> null
+                }
+            )
+            .setVideoStabilizationMode(
+                when (cameraConfiguration) {
+                    is CameraConfiguration.Video -> when (
+                        cameraConfiguration.enableVideoStabilization
+                    ) {
+                        true -> VideoStabilizationMode.getMode(cameraConfiguration.camera)
+                        false -> null
+                    }
+
+                    else -> null
+                } ?: VideoStabilizationMode.OFF
+            )
+            .setEdgeMode(camera2Options.edgeMode)
+            .setNoiseReductionMode(camera2Options.noiseReductionMode)
+            .setShadingMode(camera2Options.shadingMode)
+            .setColorCorrectionAberrationMode(camera2Options.colorCorrectionAberrationMode)
+            .setDistortionCorrectionMode(camera2Options.distortionCorrectionMode)
+            .setHotPixelMode(camera2Options.hotPixelMode)
+            .setProSettings(
+                viewModel.proSettings.value.takeIf {
+                    cameraConfiguration.cameraMode == CameraMode.PRO
+                }
+            )
+            .build()
+        )
+    }
+
+    /**
+     * Shows only the PRO controls the bound camera supports.
+     */
+    private fun updateProControls() {
+        val capabilities = viewModel.proCapabilities
+        val evRange = boundCameraConfiguration?.camera?.exposureCompensationRange
+
+        val supported = mapOf(
+            ProControl.ISO to ((capabilities?.isoValues?.size ?: 0) > 1),
+            ProControl.SHUTTER to ((capabilities?.exposureTimeValues?.size ?: 0) > 1),
+            ProControl.EV to (evRange != null && evRange.endInclusive > evRange.start),
+            ProControl.WB to (capabilities?.awbPresets?.isNotEmpty() == true),
+            ProControl.TEMPERATURE to (capabilities?.supportsColorTemperature == true),
+            ProControl.FOCUS to (capabilities?.minimumFocusDistance != null),
+        )
+        for ((control, isSupported) in supported) {
+            findViewById<MaterialButton>(control.buttonId).isVisible = isSupported
+        }
+        if (selectedProControl?.let { supported[it] } != true) {
+            proControlsToggleGroup.clearChecked()
+            selectedProControl = null
+        }
+        refreshProSlider()
+    }
+
+    /**
+     * Number of slider positions and the current position for [control], or null if the control
+     * has nothing to choose from.
+     */
+    private fun proSliderState(control: ProControl): Pair<Int, Int?>? {
+        val capabilities = viewModel.proCapabilities ?: return null
+        val settings = viewModel.proSettings.value
+        return when (control) {
+            ProControl.ISO -> capabilities.isoValues.size to
+                    settings.iso?.let { capabilities.isoValues.indexOf(it) }
+
+            ProControl.SHUTTER -> capabilities.exposureTimeValues.size to
+                    settings.exposureTimeNs?.let { capabilities.exposureTimeValues.indexOf(it) }
+
+            ProControl.EV -> exposureCompensationRangeToLevel?.let { (range, level) ->
+                (range.endInclusive - range.start + 1) to (Int.mapToRange(range, level) - range.start)
+            }
+
+            ProControl.WB -> capabilities.awbPresets.size to
+                    (settings.whiteBalance as? ProSettings.WhiteBalance.Preset)?.let {
+                        capabilities.awbPresets.indexOf(it.awbMode)
+                    }
+
+            ProControl.TEMPERATURE -> PRO_TEMPERATURE_STEPS to
+                    (settings.whiteBalance as? ProSettings.WhiteBalance.Temperature)?.let {
+                        (it.kelvin - PRO_TEMPERATURE_MIN_K) / PRO_TEMPERATURE_STEP_K
+                    }
+
+            ProControl.FOCUS -> PRO_FOCUS_STEPS to settings.focusDistance?.let {
+                ((it / capabilities.minimumFocusDistance!!) * (PRO_FOCUS_STEPS - 1)).toInt()
+            }
+        }?.takeIf { it.first > 1 }
+    }
+
+    private fun refreshProSlider() {
+        val control = selectedProControl
+        val state = control?.let { proSliderState(it) }
+        proSliderRow.isVisible = state != null
+        if (control == null || state == null) {
+            return
+        }
+
+        val (positions, current) = state
+        val manualExposure = viewModel.proSettings.value.isManualExposure
+        proSlider.valueTo = (positions - 1).toFloat()
+        proSlider.value = (current ?: (positions / 2)).coerceIn(0, positions - 1).toFloat()
+        proSlider.isEnabled = !(control == ProControl.EV && manualExposure)
+        proAutoButton.isEnabled = proSlider.isEnabled
+        proValueTextView.text = when {
+            control == ProControl.EV && manualExposure ->
+                getString(R.string.pro_ev_manual_exposure)
+
+            current == null && control != ProControl.EV -> getString(R.string.pro_value_auto)
+
+            else -> formatProValue(control, proSlider.value.toInt())
+        }
+    }
+
+    private fun formatProValue(control: ProControl, position: Int): String {
+        val capabilities = viewModel.proCapabilities ?: return ""
+        return when (control) {
+            ProControl.ISO -> capabilities.isoValues[position].toString()
+
+            ProControl.SHUTTER -> {
+                val exposureTimeNs = capabilities.exposureTimeValues[position]
+                when (exposureTimeNs >= NANOS_PER_SECOND) {
+                    true -> getString(
+                        R.string.pro_value_shutter_seconds,
+                        (exposureTimeNs / NANOS_PER_SECOND).toInt()
+                    )
+
+                    false -> getString(
+                        R.string.pro_value_shutter_fraction,
+                        (NANOS_PER_SECOND / exposureTimeNs).toInt()
+                    )
+                }
+            }
+
+            ProControl.EV -> exposureCompensationRangeToLevel?.let { (range, _) ->
+                val ev = range.start + position
+                when (ev == 0) {
+                    true -> "0"
+                    false -> EXPOSURE_LEVEL_FORMATTER.format(ev).toString()
+                }
+            } ?: ""
+
+            ProControl.WB -> getString(awbPresetName(capabilities.awbPresets[position]))
+
+            ProControl.TEMPERATURE -> getString(
+                R.string.pro_value_temperature,
+                PRO_TEMPERATURE_MIN_K + position * PRO_TEMPERATURE_STEP_K
+            )
+
+            ProControl.FOCUS -> when (position) {
+                0 -> getString(R.string.pro_value_focus_infinity)
+                else -> getString(
+                    R.string.pro_value_focus_distance,
+                    1f / (capabilities.minimumFocusDistance!! * position / (PRO_FOCUS_STEPS - 1))
+                )
+            }
+        }
+    }
+
+    private fun onProSliderChanged(position: Int) {
+        val capabilities = viewModel.proCapabilities ?: return
+        when (selectedProControl) {
+            ProControl.ISO -> viewModel.setProIso(capabilities.isoValues[position])
+
+            ProControl.SHUTTER -> viewModel.setProExposureTime(
+                capabilities.exposureTimeValues[position]
+            )
+
+            ProControl.EV -> exposureCompensationRangeToLevel?.let { (range, _) ->
+                val steps = range.endInclusive - range.start
+                if (steps > 0) {
+                    viewModel.setExposureCompensationLevel(position.toFloat() / steps)
+                }
+            }
+
+            ProControl.WB -> viewModel.setProWhiteBalance(
+                ProSettings.WhiteBalance.Preset(capabilities.awbPresets[position])
+            )
+
+            ProControl.TEMPERATURE -> viewModel.setProWhiteBalance(
+                ProSettings.WhiteBalance.Temperature(
+                    PRO_TEMPERATURE_MIN_K + position * PRO_TEMPERATURE_STEP_K
+                )
+            )
+
+            ProControl.FOCUS -> viewModel.setProFocusDistance(
+                capabilities.minimumFocusDistance!! * position / (PRO_FOCUS_STEPS - 1)
+            )
+
+            null -> Unit
+        }
+        refreshProSlider()
+    }
+
+    private fun setSelectedProControlAuto() {
+        when (selectedProControl) {
+            ProControl.ISO -> viewModel.setProIso(null)
+            ProControl.SHUTTER -> viewModel.setProExposureTime(null)
+            ProControl.EV -> viewModel.setExposureCompensationLevel(0.5f)
+            ProControl.WB, ProControl.TEMPERATURE ->
+                viewModel.setProWhiteBalance(ProSettings.WhiteBalance.Auto)
+
+            ProControl.FOCUS -> viewModel.setProFocusDistance(null)
+            null -> Unit
+        }
+        refreshProSlider()
+    }
+
+    private fun awbPresetName(awbMode: Int) = when (awbMode) {
+        CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT -> R.string.pro_wb_incandescent
+        CameraMetadata.CONTROL_AWB_MODE_WARM_FLUORESCENT -> R.string.pro_wb_warm_fluorescent
+        CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT -> R.string.pro_wb_fluorescent
+        CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT -> R.string.pro_wb_daylight
+        CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT -> R.string.pro_wb_cloudy
+        CameraMetadata.CONTROL_AWB_MODE_TWILIGHT -> R.string.pro_wb_twilight
+        else -> R.string.pro_wb_shade
     }
 
     private fun updateGalleryButton(uri: Uri?, fromCapture: Boolean) {
@@ -2127,5 +2396,15 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
         private const val SINGLE_CAPTURE_INLINE_MAX_SIDE_LEN_PIXELS = 256
 
         private val EXPOSURE_LEVEL_FORMATTER = DecimalFormat("+#;-#")
+
+        private const val NANOS_PER_SECOND = 1_000_000_000L
+
+        // Manual color temperature range of the PRO mode: 2500 K to 7500 K in 100 K steps.
+        private const val PRO_TEMPERATURE_MIN_K = 2500
+        private const val PRO_TEMPERATURE_STEP_K = 100
+        private const val PRO_TEMPERATURE_STEPS = 51
+
+        // Manual focus positions from infinity (0) to the closest focus distance.
+        private const val PRO_FOCUS_STEPS = 101
     }
 }

@@ -7,6 +7,8 @@ package org.lineageos.aperture.ext
 
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.params.ColorSpaceTransform
+import android.hardware.camera2.params.RggbChannelVector
 import android.os.Build
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.core.util.toRange
@@ -16,6 +18,7 @@ import org.lineageos.aperture.models.EdgeMode
 import org.lineageos.aperture.models.FrameRate
 import org.lineageos.aperture.models.HotPixelMode
 import org.lineageos.aperture.models.NoiseReductionMode
+import org.lineageos.aperture.models.ProSettings
 import org.lineageos.aperture.models.ShadingMode
 import org.lineageos.aperture.models.VideoStabilizationMode
 
@@ -142,3 +145,107 @@ fun CaptureRequestOptions.Builder.setHotPixelMode(
         null -> null
     }
 )
+
+/**
+ * Exposure time used with a manual ISO while the exposure time itself is automatic, and ISO used
+ * with a manual exposure time while ISO is automatic. Auto exposure must be off for either manual
+ * value to take effect, so the other one needs a concrete value.
+ */
+private const val PRO_FALLBACK_EXPOSURE_TIME_NS = 1_000_000_000L / 60
+private const val PRO_FALLBACK_ISO = 100
+
+private val IDENTITY_COLOR_TRANSFORM = ColorSpaceTransform(
+    intArrayOf(
+        1, 1, 0, 1, 0, 1,
+        0, 1, 1, 1, 0, 1,
+        0, 1, 0, 1, 1, 1,
+    )
+)
+
+/**
+ * Applies [CameraMode.PRO] manual settings. Pass null outside PRO to leave every related key to
+ * CameraX and the camera's automatic control.
+ */
+@androidx.camera.camera2.interop.ExperimentalCamera2Interop
+fun CaptureRequestOptions.Builder.setProSettings(
+    proSettings: ProSettings?,
+): CaptureRequestOptions.Builder {
+    if (proSettings == null) {
+        return this
+    }
+
+    if (proSettings.isManualExposure) {
+        setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+        setCaptureRequestOption(
+            CaptureRequest.SENSOR_SENSITIVITY, proSettings.iso ?: PRO_FALLBACK_ISO
+        )
+        setCaptureRequestOption(
+            CaptureRequest.SENSOR_EXPOSURE_TIME,
+            proSettings.exposureTimeNs ?: PRO_FALLBACK_EXPOSURE_TIME_NS
+        )
+    }
+
+    when (val whiteBalance = proSettings.whiteBalance) {
+        ProSettings.WhiteBalance.Auto -> Unit
+
+        is ProSettings.WhiteBalance.Preset -> setCaptureRequestOption(
+            CaptureRequest.CONTROL_AWB_MODE, whiteBalance.awbMode
+        )
+
+        is ProSettings.WhiteBalance.Temperature -> {
+            setCaptureRequestOption(
+                CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF
+            )
+            setCaptureRequestOption(
+                CaptureRequest.COLOR_CORRECTION_MODE,
+                CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX
+            )
+            setCaptureRequestOption(
+                CaptureRequest.COLOR_CORRECTION_GAINS, colorTemperatureToGains(whiteBalance.kelvin)
+            )
+            setCaptureRequestOption(
+                CaptureRequest.COLOR_CORRECTION_TRANSFORM, IDENTITY_COLOR_TRANSFORM
+            )
+        }
+    }
+
+    proSettings.focusDistance?.let {
+        setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+        setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, it)
+    }
+
+    return this
+}
+
+/**
+ * Approximates the white balance gains for a light source of the given color temperature: the
+ * RGB color of a black body at [kelvin] (Tanner Helland's fit of the Planckian locus), inverted
+ * and normalized to the green channel.
+ */
+private fun colorTemperatureToGains(kelvin: Int): RggbChannelVector {
+    val t = kelvin.coerceIn(1000, 40000) / 100.0
+
+    val red = if (t <= 66) 255.0 else 329.698727446 * Math.pow(t - 60, -0.1332047592)
+    val green = if (t <= 66) {
+        99.4708025861 * Math.log(t) - 161.1195681661
+    } else {
+        288.1221695283 * Math.pow(t - 60, -0.0755148492)
+    }
+    val blue = when {
+        t >= 66 -> 255.0
+        t <= 19 -> 0.0
+        else -> 138.5177312231 * Math.log(t - 10) - 305.0447927307
+    }
+
+    fun channel(value: Double) = value.coerceIn(1.0, 255.0) / 255.0
+    val r = channel(red)
+    val g = channel(green)
+    val b = channel(blue)
+
+    return RggbChannelVector(
+        (g / r).toFloat(),
+        1f,
+        1f,
+        (g / b).toFloat(),
+    )
+}

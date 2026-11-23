@@ -88,6 +88,7 @@ class PreferencesRepository(
         defaultValue = CameraMode.PHOTO,
         enumMapper = {
             when (it) {
+                CameraMode.PRO -> "pro"
                 CameraMode.PHOTO -> "photo"
                 CameraMode.VIDEO -> "video"
                 CameraMode.QR -> "qr"

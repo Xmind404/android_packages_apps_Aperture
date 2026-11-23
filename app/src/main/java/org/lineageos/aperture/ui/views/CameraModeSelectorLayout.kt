@@ -51,6 +51,7 @@ class CameraModeSelectorLayout @JvmOverloads constructor(
             ).apply {
                 setText(
                     when (cameraMode) {
+                        CameraMode.PRO -> R.string.camera_mode_pro
                         CameraMode.PHOTO -> R.string.camera_mode_photo
                         CameraMode.VIDEO -> R.string.camera_mode_video
                         CameraMode.QR -> R.string.camera_mode_qr
