@@ -865,6 +865,11 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
                     // Camera access is back (e.g. re-enabled from Quick Settings)
                     cameraDisabledMessageShown = false
                     viewFinder.isInvisible = false
+
+                    // Camera2 options submitted while the camera was closed (pause/resume,
+                    // reopening, lens switch) are cancelled by CameraX; send the full set again
+                    // whenever the camera is open, so processing and Pro settings stay applied.
+                    applyCaptureRequestOptions()
                 }
 
                 cameraXCameraState.error?.let {
