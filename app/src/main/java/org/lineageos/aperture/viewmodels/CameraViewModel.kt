@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.util.Log
 import android.view.OrientationEventListener
 import androidx.camera.core.AspectRatio
@@ -1059,6 +1060,7 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
 
         // Create output options object which contains file + metadata
         val timestamp = System.currentTimeMillis()
+        val saveVolumeName = getSaveVolumeName()
         val outputOptions = StorageUtils.getPhotoMediaStoreOutputOptions(
             applicationContext.contentResolver,
             ImageCapture.Metadata().apply {
@@ -1072,6 +1074,7 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
             mimeType,
             timestamp,
             photoOutputStream,
+            saveVolumeName,
         )
 
         // Set up image capture listener, which is triggered after photo has
@@ -1137,6 +1140,7 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
                     },
                     "image/x-adobe-dng",
                     timestamp,
+                    volumeName = saveVolumeName,
                 )
 
                 cameraController.takePicture(
@@ -1174,7 +1178,8 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
         val outputOptions = StorageUtils.getVideoMediaStoreOutputOptions(
             applicationContext.contentResolver,
             System.currentTimeMillis(),
-            location.value.takeUnless { inSingleCaptureMode.value }
+            location.value.takeUnless { inSingleCaptureMode.value },
+            getSaveVolumeName(),
         )
 
         // Play shutter sound
@@ -1623,6 +1628,21 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
      */
     suspend fun isVideoRecordingAvailable() = cameraRepository.cameras.first().any {
         it.supportsCameraMode(CameraMode.VIDEO)
+    }
+
+    /**
+     * The MediaStore volume new photos and videos go to: the SD card when enabled in settings and
+     * mounted, otherwise the default external storage. Falling back emits
+     * [Event.SdCardUnavailable] so the user knows where the media went.
+     */
+    private fun getSaveVolumeName(): String {
+        if (!preferencesRepository.saveToSdCard.value) {
+            return MediaStore.VOLUME_EXTERNAL
+        }
+        return StorageUtils.getSdCardVolumeName(applicationContext) ?: run {
+            emitEvent(Event.SdCardUnavailable)
+            MediaStore.VOLUME_EXTERNAL
+        }
     }
 
     /**

@@ -283,6 +283,14 @@ class PreferencesRepository(
     ).asPreferenceHolder()
 
     /**
+     * Whether photos and videos should be saved to a removable SD card when one is present.
+     */
+    val saveToSdCard = primitivePreference(
+        key = "save_to_sd_card",
+        defaultValue = false,
+    ).asPreferenceHolder()
+
+    /**
      * Whether shutter sound should be played.
      */
     val shutterSound = primitivePreference(

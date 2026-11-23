@@ -25,6 +25,12 @@ sealed interface Event {
     data object ShowForceTorchHelp : Event
 
     /**
+     * Saving to the SD card was requested but no SD card is mounted; the media goes to internal
+     * storage instead.
+     */
+    data object SdCardUnavailable : Event
+
+    /**
      * Start the flip camera button animation.
      */
     data object FlipCameraAnimation : Event

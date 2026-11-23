@@ -684,6 +684,12 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
                         forceTorchSnackbar.show()
                     }
 
+                    is Event.SdCardUnavailable -> Snackbar.make(
+                        secondaryBottomBarLayout,
+                        R.string.sd_card_unavailable,
+                        Snackbar.LENGTH_SHORT
+                    ).setAnchorView(secondaryBottomBarLayout).show()
+
                     is Event.FlipCameraAnimation ->
                         (flipCameraButton.drawable as AnimatedVectorDrawable).start()
 

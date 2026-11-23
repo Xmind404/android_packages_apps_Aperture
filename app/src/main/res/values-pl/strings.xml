@@ -76,6 +76,9 @@
     <string name="bright_screen_summary" formatted="false">Ustawia maksymalną jasność ekranu</string>
     <string name="save_location_title">Zapisz dane lokalizacji</string>
     <string name="save_location_summary">Uwzględnia pozycję GPS w metadanych</string>
+    <string name="save_to_sd_card_title">Zapisuj na karcie SD</string>
+    <string name="save_to_sd_card_summary">Zapisuj zdjęcia i filmy na karcie SD, gdy jest włożona</string>
+    <string name="sd_card_unavailable">Karta SD niedostępna, zapis w pamięci wewnętrznej</string>
     <string name="save_location_toast">Uprawnienia lokalizacji nie zostały przyznane przez użytkownika.</string>
     <string name="shutter_sound_title">Dźwięk migawki</string>
     <string name="shutter_sound_summary">Odtwarza dźwięk przy przechwytywaniu</string>
