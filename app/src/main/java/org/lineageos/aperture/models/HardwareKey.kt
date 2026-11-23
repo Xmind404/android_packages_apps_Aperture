@@ -59,6 +59,13 @@ enum class HardwareKey(
         R.string.volume_buttons_invert_title,
         R.string.volume_buttons_invert_summary,
     ),
+    SPACE(
+        KeyEvent.KEYCODE_SPACE,
+        null,
+        false,
+        GestureAction.SHUTTER,
+        R.string.space_key_action_title,
+    ),
     ZOOM(
         KeyEvent.KEYCODE_ZOOM_IN,
         KeyEvent.KEYCODE_ZOOM_OUT,

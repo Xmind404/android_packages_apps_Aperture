@@ -488,6 +488,7 @@ class PreferencesRepository(
                 HardwareKey.FOCUS -> "focus_button"
                 HardwareKey.MUTE -> "mute_button"
                 HardwareKey.VOLUME -> "volume_buttons"
+                HardwareKey.SPACE -> "space_key"
                 HardwareKey.ZOOM -> "zoom_buttons"
             }
 

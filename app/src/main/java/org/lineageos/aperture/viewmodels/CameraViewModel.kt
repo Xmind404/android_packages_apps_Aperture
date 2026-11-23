@@ -1571,6 +1571,18 @@ class CameraViewModel(application: Application) : ApertureViewModel(application)
     fun resetZoom() = smoothZoom(1f)
 
     /**
+     * Zoom by [step] of the linear zoom range (0 = min, 1 = max), e.g. from a keyboard touchpad
+     * swipe. Ignored while an animated zoom is running.
+     */
+    fun zoomByLinearStep(step: Float) {
+        if (zoomGestureMutex.isLocked) {
+            return
+        }
+        val zoomState = zoomState.value ?: return
+        cameraController.setLinearZoom((zoomState.linearZoom + step).coerceIn(0f, 1f))
+    }
+
+    /**
      * Zoom in by a power of 2.
      */
     fun zoomIn() = zoomState.value?.zoomRatio?.let {

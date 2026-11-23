@@ -653,6 +653,22 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
     }
 
     /**
+     * Horizontal scrolling zooms: swiping right on a keyboard touchpad (e.g. the BlackBerry KEY2
+     * keyboard, whose framework handler sends ACTION_SCROLL with AXIS_HSCROLL) zooms in, swiping
+     * left zooms out. Vertical scrolling is left to the views and never triggers a capture.
+     */
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_SCROLL && !capturePreviewLayout.isVisible) {
+            val hScroll = ev.getAxisValue(MotionEvent.AXIS_HSCROLL)
+            if (hScroll != 0f) {
+                viewModel.zoomByLinearStep(-hScroll * SCROLL_ZOOM_LINEAR_STEP)
+                return true
+            }
+        }
+        return super.dispatchGenericMotionEvent(ev)
+    }
+
+    /**
      * This is a method that can be overridden to set the initial camera mode and facing.
      * It's gonna have priority over shared preferences and intents.
      */
@@ -2083,6 +2099,12 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
     }
 
     companion object {
+        /**
+         * Linear zoom change per unit of AXIS_HSCROLL. A full-width swipe across the KEY2 keyboard
+         * produces about 12 units, i.e. roughly the whole zoom range.
+         */
+        private const val SCROLL_ZOOM_LINEAR_STEP = 0.08f
+
         private val LOG_TAG = CameraActivity::class.simpleName!!
 
         private const val MSG_HIDE_ZOOM_SLIDER = 0

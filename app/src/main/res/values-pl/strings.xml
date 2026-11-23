@@ -91,6 +91,7 @@
     <string name="volume_buttons_invert_title">Odwróć przyciski głośności</string>
     <string name="volume_buttons_invert_summary">Odwraca działanie podgłaśniania i ściszania</string>
     <string name="zoom_buttons_title">Przyciski powiększenia</string>
+    <string name="space_key_action_title">Funkcja spacji</string>
     <string name="zoom_buttons_action_title">Funkcja przycisków powiększania</string>
     <string name="zoom_buttons_invert_title">Odwróć przyciski powiększania</string>
     <string name="zoom_buttons_invert_summary">Odwraca działanie przybliżania i oddalania</string>

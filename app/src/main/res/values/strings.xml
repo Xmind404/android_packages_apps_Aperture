@@ -127,6 +127,7 @@
     <string name="volume_buttons_invert_title">Invert volume buttons</string>
     <string name="volume_buttons_invert_summary">Invert volume up and down behavior</string>
     <string name="zoom_buttons_title">Zoom buttons</string>
+    <string name="space_key_action_title">Space bar action</string>
     <string name="zoom_buttons_action_title">Zoom buttons action</string>
     <string name="zoom_buttons_invert_title">Invert zoom buttons</string>
     <string name="zoom_buttons_invert_summary">Invert zoom in and out behavior</string>
