@@ -241,6 +241,11 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
     private val qrBottomSheetDialog by lazy { QrBottomSheetDialog(this) }
     private val isGoogleLensAvailable by lazy { GoogleLensUtils.isGoogleLensAvailable(this) }
 
+    /**
+     * Whether the "camera disabled" message was shown for the current disabled period.
+     */
+    private var cameraDisabledMessageShown = false
+
     private var viewFinderTouchEvent: MotionEvent? = null
     private val gestureDetector by lazy {
         GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
@@ -854,6 +859,14 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
 
         launch {
             viewModel.cameraXCameraState.collect { cameraXCameraState ->
+                if (cameraXCameraState.type == CameraXCameraState.Type.OPEN &&
+                    cameraXCameraState.error == null
+                ) {
+                    // Camera access is back (e.g. re-enabled from Quick Settings)
+                    cameraDisabledMessageShown = false
+                    viewFinder.isInvisible = false
+                }
+
                 cameraXCameraState.error?.let {
                     // Log the error
                     Log.e(
@@ -899,9 +912,15 @@ open class CameraActivity : AppCompatActivity(R.layout.activity_camera) {
                         }
 
                         CameraXCameraState.ERROR_CAMERA_DISABLED -> {
-                            // No way to fix it without user action, bail out
-                            showToast(R.string.error_camera_disabled)
-                            finish()
+                            // Camera access is disabled (sensor privacy or policy). Keep
+                            // Aperture open with a black preview; CameraX keeps retrying and the
+                            // preview returns once access is re-enabled. CameraX can report the
+                            // error repeatedly, so only show the message once.
+                            if (!cameraDisabledMessageShown) {
+                                showToast(R.string.error_camera_disabled)
+                                cameraDisabledMessageShown = true
+                            }
+                            viewFinder.isInvisible = true
                         }
 
                         CameraXCameraState.ERROR_CAMERA_FATAL_ERROR -> {
